@@ -165,3 +165,37 @@ Chạy lệnh kiểm thử tự động:
 py test_neck.py
 ```
 
+---
+
+## 5. Huấn Luyện Mô Hình (Training)
+
+Mô hình học sâu End-to-End DETR được huấn luyện thông qua thuật toán ghép cặp lưỡng phân (**Hungarian Matching**) cùng bộ ba hàm mất mát chuyên dụng:
+- **Focal Loss** ($\mathcal{L}_{\text{cls}}$): Giải quyết mất cân bằng nghiêm trọng giữa foreground và background query.
+- **L1 Box Loss** ($\mathcal{L}_{\text{L1}}$): Tối ưu khoảng cách tâm và kích thước hộp đối tượng.
+- **GIoU Loss** ($\mathcal{L}_{\text{giou}}$): Tối ưu độ giao thoa và hình học bao quanh của bounding box.
+
+### A. Chạy trực tiếp từ dòng lệnh (CLI):
+```bash
+py train.py --epochs 50 --batch-size 4 --lr 0.0001 --img-size 640
+```
+
+### B. Gọi hàm huấn luyện trong Code Python:
+```python
+from train import train_model
+
+train_model(
+    train_img_dir="C:/Users/PC/Downloads/DUT_Anti_UAV_YOLO/images/train",
+    train_label_dir="C:/Users/PC/Downloads/DUT_Anti_UAV_YOLO/labels/train",
+    val_img_dir="C:/Users/PC/Downloads/DUT_Anti_UAV_YOLO/images/val",
+    val_label_dir="C:/Users/PC/Downloads/DUT_Anti_UAV_YOLO/labels/val",
+    num_classes=1,       # 1 lớp: uav
+    num_queries=300,
+    epochs=50,
+    batch_size=4,
+    lr=1e-4,
+    lr_backbone=1e-5,    # Learning rate nhỏ hơn cho backbone đã pre-train
+    output_dir="runs/train"
+)
+```
+
+

@@ -7,6 +7,7 @@ from .msda import MultiScaleDilatedAttention
 from .query_decoder import UncertaintyMinimalQuerySelection, DecoderHead
 from .full_model import UAVTransformerDetector
 from .visualize import draw_bounding_boxes
+from .criterion import HungarianMatcher, SetCriterion, box_cxcywh_to_xyxy, box_xyxy_to_cxcywh
 
 __all__ = [
     "ConvBNAct",
@@ -27,6 +28,10 @@ __all__ = [
     "DecoderHead",
     "UAVTransformerDetector",
     "draw_bounding_boxes",
+    "HungarianMatcher",
+    "SetCriterion",
+    "box_cxcywh_to_xyxy",
+    "box_xyxy_to_cxcywh",
 ]
 
 
