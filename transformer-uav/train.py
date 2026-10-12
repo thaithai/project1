@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
+from torchmetrics.detection.mean_ap import MeanAveragePrecision
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 if hasattr(sys.stdout, 'reconfigure'):
@@ -68,14 +69,11 @@ def train_one_epoch(
         bbox_loss_accum += loss_dict["loss_bbox"].item()
         giou_loss_accum += loss_dict["loss_giou"].item()
 
-        if (step + 1) % print_freq == 0 or (step + 1) == num_batches:
+        if (step + 1) == num_batches:
             elapsed = time.time() - start_time
             print(
-                f"Epoch [{epoch + 1}] Step [{step + 1}/{num_batches}] "
-                f"Total Loss: {loss_total.item():.4f} "
-                f"(Cls: {loss_dict['loss_cls'].item():.4f}, "
-                f"BBox: {loss_dict['loss_bbox'].item():.4f}, "
-                f"GIoU: {loss_dict['loss_giou'].item():.4f}) - "
+                f"Epoch [{epoch + 1}] Hoàn thành - "
+                f"Total Loss: {loss_total.item():.4f} - "
                 f"Time: {elapsed:.1f}s"
             )
 
@@ -96,7 +94,7 @@ def evaluate(
     device: torch.device
 ) -> Dict[str, float]:
     """
-    Đánh giá mô hình trên tập validation.
+    Đánh giá mô hình trên tập validation, tính Loss và mAP (mAP@0.5, mAP@0.5:0.95).
     """
     model.eval()
     criterion.eval()
@@ -107,10 +105,14 @@ def evaluate(
     giou_loss_accum = 0.0
     num_batches = len(data_loader)
 
+    # Khởi tạo đối tượng tính mAP của torchmetrics
+    metric = MeanAveragePrecision(box_format="xyxy", class_metrics=False)
+
     for images, targets in data_loader:
         images = images.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
+        # 1. Forward pass tính loss
         outputs = model(images)
         loss_dict = criterion(outputs, targets)
 
@@ -119,11 +121,38 @@ def evaluate(
         bbox_loss_accum += loss_dict["loss_bbox"].item()
         giou_loss_accum += loss_dict["loss_giou"].item()
 
+        # 2. Xử lý format dự đoán và ground truth để đưa vào MeanAveragePrecision
+        # Lưu ý: outputs và targets cần chuyển về CPU dạng dictionary chuẩn của torchmetrics
+        # Giả sử outputs trả về danh sách dict chứa "boxes", "scores", "labels"
+        preds = []
+        for out in outputs:
+            # Chuyển đổi định dạng bounding box dự đoán của mô hình (ví dụ từ cxcywh sang xyxy nếu cần)
+            # Dưới đây là mẫu giả định format đầu ra của mô hình Detector của bạn:
+            preds.append({
+                "boxes": out["boxes"].detach().cpu(),
+                "scores": out["scores"].detach().cpu(),
+                "labels": out["labels"].detach().cpu()
+            })
+
+        gts = []
+        for t in targets:
+            gts.append({
+                "boxes": t["boxes"].detach().cpu(),
+                "labels": t["labels"].detach().cpu()
+            })
+
+        metric.update(preds, gts)
+
+    # Tính toán kết quả mAP tổng kết
+    map_metrics = metric.compute()
+
     avg_metrics = {
         "val_loss_total": total_loss_accum / max(num_batches, 1),
         "val_loss_cls": cls_loss_accum / max(num_batches, 1),
         "val_loss_bbox": bbox_loss_accum / max(num_batches, 1),
         "val_loss_giou": giou_loss_accum / max(num_batches, 1),
+        "map_50": map_metrics["map_50"].item(),         # mAP @ 0.5
+        "map_50_95": map_metrics["map"].item()          # mAP @ 0.5:0.95
     }
     return avg_metrics
 
@@ -241,11 +270,19 @@ def train_model(
 
         # Đánh giá validation
         val_info = ""
-        current_loss = train_metrics["loss_total"]
+        current_score = 0.0  # Dùng để so sánh lưu model tốt nhất
+        
         if val_loader is not None and len(val_loader) > 0:
             val_metrics = evaluate(model, criterion, val_loader, device=device_obj)
             current_loss = val_metrics["val_loss_total"]
-            val_info = f" | Val Loss: {current_loss:.4f} (Cls: {val_metrics['val_loss_cls']:.4f}, BBox: {val_metrics['val_loss_bbox']:.4f}, GIoU: {val_metrics['val_loss_giou']:.4f})"
+            current_map = val_metrics["map_50_95"] # Hoặc dùng map_50 tùy bạn chọn
+            
+            val_info = (
+                f" | Val Loss: {current_loss:.4f} "
+                f"(mAP@50: {val_metrics['map_50']:.4f}, "
+                f"mAP@50-95: {val_metrics['map_50_95']:.4f})"
+            )
+            current_score = val_metrics["map_50_95"] # Đổi tiêu chí tốt nhất là mAP cao nhất
 
         print(
             f" Epoch [{epoch + 1}/{epochs}] Hoàn thành - "
@@ -265,21 +302,22 @@ def train_model(
         last_ckpt_path = os.path.join(output_dir, "last.pt")
         torch.save(checkpoint, last_ckpt_path)
 
-        # Lưu checkpoint tốt nhất (best.pt)
-        if current_loss < best_val_loss:
-            best_val_loss = current_loss
+        # Lưu checkpoint tốt nhất (best.pt) dựa trên mAP lớn nhất
+        # Khởi tạo best_val_score = -1.0 ở trước vòng lặp epochs
+        if epoch == 0:
+            best_val_score = -1.0
+
+        if current_score > best_val_score:
+            best_val_score = current_score
             best_ckpt_path = os.path.join(output_dir, "best.pt")
             torch.save(checkpoint, best_ckpt_path)
-            print(f" Đã lưu mô hình tốt nhất (best.pt) với Loss: {best_val_loss:.4f}")
-
-    print(f"\n Huấn luyện hoàn tất! Trọng số được lưu tại: {os.path.abspath(output_dir)}")
-
+            print(f" Đã lưu mô hình tốt nhất (best.pt) với mAP@50-95: {best_val_score:.4f}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Huấn luyện mô hình UAVTransformerDetector")
 
     # Mặc định tự động kiểm tra thư mục DUT_Anti_UAV_YOLO nếu có sẵn trong Downloads
-    default_dataset = r"C:\Users\PC\Downloads\DUT_Anti_UAV_YOLO"
+    default_dataset = r"content\DUT_Anti_UAV_YOLO"
     if os.path.exists(default_dataset):
         default_train_img = os.path.join(default_dataset, "images", "train")
         default_train_lbl = os.path.join(default_dataset, "labels", "train")
